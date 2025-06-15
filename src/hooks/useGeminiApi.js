@@ -2,7 +2,7 @@ import { useState } from 'react';
 
 /**
  * Custom hook for interacting with Google Gemini API
- * Handles both text generation and image generation
+ * Handles text generation and image generation with proper error handling for CORS issues
  * @returns {Object} Object containing functions for API calls and state management
  */
 const useGeminiApi = () => {
@@ -15,6 +15,11 @@ const useGeminiApi = () => {
   
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [imageGenerationProgress, setImageGenerationProgress] = useState({
+    concept: { loading: false, completed: false, failed: false },
+    characters: Array(6).fill({ loading: false, completed: false, failed: false }),
+    scenarios: Array(3).fill({ loading: false, completed: false, failed: false })
+  });
 
   /**
    * Clean and format text by removing markdown and improving readability
@@ -106,80 +111,300 @@ const useGeminiApi = () => {
   };
 
   /**
-   * Generate an image using a different approach - try text-to-image with Gemini
-   * @param {string} prompt - The image description prompt
-   * @returns {Promise<string>} Base64 encoded image data or null
+   * Generate mood keywords based on world type
+   * @param {string} worldType - The type of world
+   * @returns {string} Mood descriptors for image generation
    */
-  const generateImage = async (prompt) => {
-    // For now, let's try a different model or approach
-    // The imagen API might not be available, so we'll use a placeholder approach
+  const getMoodFromWorldType = (worldType) => {
+    const moodMap = {
+      'Medieval Fantasy': 'epic, mystical, magical, ancient, heroic',
+      'Sci-Fi Future': 'futuristic, technological, sleek, advanced, cosmic',
+      'Post-Apocalyptic': 'gritty, desolate, survival, ruins, harsh',
+      'Steampunk': 'industrial, brass, steam, Victorian, mechanical',
+      'Cyberpunk': 'neon, urban, dystopian, high-tech, noir',
+      'Modern Urban Fantasy': 'contemporary, magical realism, urban, mysterious'
+    };
     
+    return moodMap[worldType] || 'atmospheric, detailed, immersive';
+  };
+
+  /**
+   * Create optimized image prompt for world concept art
+   * @param {string} userIdea - User's world idea
+   * @param {string} worldType - Type of world
+   * @returns {string} Optimized prompt for image generation
+   */
+  const createWorldImagePrompt = (userIdea, worldType) => {
+    const mood = getMoodFromWorldType(worldType);
+    return `Create a stunning cinematic concept art depicting a ${worldType} world inspired by: "${userIdea}". 
+Style: High-quality digital art, masterpiece quality, detailed environment, atmospheric lighting, professional game concept art.
+Composition: Epic wide landscape view showcasing the world's unique characteristics and atmosphere.
+Mood: ${mood}, breathtaking, immersive.
+Technical: 4K quality, sharp details, vibrant colors, dramatic composition.`;
+  };
+
+  /**
+   * Create character image prompt
+   * @param {Object} character - Character data
+   * @param {string} worldType - Type of world
+   * @returns {string} Character-specific image prompt
+   */
+  const createCharacterImagePrompt = (character, worldType) => {
+    const mood = getMoodFromWorldType(worldType);
+    return `Character concept art portrait of ${character.name}, a ${character.role} in a ${worldType} world.
+Character Description: ${character.description}
+Style: Professional digital character portrait, detailed, high-quality game art style, masterpiece.
+Composition: Upper body portrait, showing personality and role clearly.
+Mood: ${mood}, character-focused, expressive.
+Technical: Sharp details, good lighting, character design quality.`;
+  };
+
+  /**
+   * Create scenario/location image prompt
+   * @param {number} index - Scenario index
+   * @param {string} userIdea - User's world idea
+   * @param {string} worldType - Type of world
+   * @returns {string} Scenario-specific image prompt
+   */
+  const createScenarioImagePrompt = (index, userIdea, worldType) => {
+    const mood = getMoodFromWorldType(worldType);
+    const scenarioTypes = [
+      'a key location where important events unfold',
+      'a mysterious place filled with secrets and danger',
+      'a central hub where characters gather and stories begin'
+    ];
+    
+    return `Environmental concept art for ${scenarioTypes[index]} in a ${worldType} world.
+World Concept: "${userIdea}"
+Style: Atmospheric environment art, cinematic composition, professional quality.
+Elements: Showcase unique features and atmosphere of this important location.
+Mood: ${mood}, environmental storytelling, immersive.
+Technical: Detailed background art, good composition, atmospheric lighting.`;
+  };
+
+  /**
+   * Generate detailed visual description as fallback when image generation fails
+   * @param {string} prompt - The image prompt
+   * @param {string} type - Type of image (concept, character, scenario)
+   * @returns {Promise<string>} Detailed visual description
+   */
+  const generateImageDescription = async (prompt, type = 'concept') => {
+    const descriptionPrompt = `Based on this image generation prompt: "${prompt}"
+
+Create a detailed visual description that an artist could use to create this image. Include:
+- Composition and perspective details
+- Color palette and lighting description
+- Key visual elements and their placement
+- Atmosphere and mood
+- Specific artistic style notes
+- Technical details for the artist
+
+Write this as a comprehensive art direction brief that captures the essence of what the image should look like.`;
+
     try {
-      // Try the direct imagen endpoint first
-      const url = `https://generativelanguage.googleapis.com/v1/models/imagen-3.0-generate:generateImage?key=${apiKey}`;
-      
-      const requestBody = {
-        prompt: prompt,
-        sampleCount: 1,
-        aspectRatio: "16:9",
-        safetyFilterLevel: "BLOCK_ONLY_HIGH",
-        personGeneration: "ALLOW_ADULT"
+      const description = await generateText(descriptionPrompt);
+      return {
+        type,
+        description: cleanText(description),
+        prompt: prompt.substring(0, 200) + '...',
+        isDescription: true
       };
-
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody)
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        if (data.candidates && data.candidates[0] && data.candidates[0].image) {
-          return data.candidates[0].image.data;
-        }
-      }
-
-      // If that doesn't work, try the beta endpoint
-      const betaUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-fast-generate:generateImage?key=${apiKey}`;
-      
-      const betaResponse = await fetch(betaUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          prompt: prompt,
-          aspectRatio: "16:9"
-        })
-      });
-
-      if (betaResponse.ok) {
-        const betaData = await betaResponse.json();
-        if (betaData.generatedImages && betaData.generatedImages[0]) {
-          return betaData.generatedImages[0].generatedImage.data;
-        }
-      }
-
-      console.warn('Image generation not available with current API configuration');
-      return null;
-
-    } catch (err) {
-      console.error('Error generating image:', err);
-      return null;
+    } catch (error) {
+      console.error('Error generating image description:', error);
+      return {
+        type,
+        description: `Visual concept for ${type}: ${prompt.substring(0, 300)}...`,
+        prompt: prompt.substring(0, 200) + '...',
+        isDescription: true
+      };
     }
   };
 
   /**
-   * Main function to generate complete world content
+   * Attempt to generate an image, with fallback to description
+   * @param {string} prompt - The detailed image description prompt
+   * @param {string} type - Type of image being generated
+   * @returns {Promise<Object>} Image data or description fallback
+   */
+  const generateImageWithFallback = async (prompt, type = 'concept') => {
+    if (!apiKey) {
+      console.error('API key not available for image generation');
+      return await generateImageDescription(prompt, type);
+    }
+
+    try {
+      // Try the working API endpoint
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${apiKey}`;
+      
+      const payload = {
+        instances: { prompt: prompt },
+        parameters: { "sampleCount": 1 }
+      };
+
+      console.log(`Attempting to generate ${type} image...`);
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.warn(`Image generation failed (${response.status}): ${errorText}`);
+        throw new Error(`API returned ${response.status}`);
+      }
+
+      const result = await response.json();
+
+      // Check for successful image generation
+      if (result.predictions && result.predictions.length > 0 && result.predictions[0].bytesBase64Encoded) {
+        console.log(`✅ ${type} image generated successfully!`);
+        return {
+          type,
+          image: result.predictions[0].bytesBase64Encoded,
+          isImage: true
+        };
+      } else {
+        console.warn(`No image data in ${type} response:`, result);
+        throw new Error('No image data in response');
+      }
+
+    } catch (error) {
+      console.warn(`Image generation failed for ${type}, falling back to description:`, error.message);
+      
+      // Fallback to generating a detailed description
+      return await generateImageDescription(prompt, type);
+    }
+  };
+
+  /**
+   * Generate all visual content for the world
+   * @param {Object} worldData - Complete world data
+   * @returns {Promise<Object>} World data with visual content
+   */
+  const generateAllVisualContent = async (worldData) => {
+    const { userIdea, worldType, characterConcepts } = worldData;
+    const visualResults = { ...worldData };
+
+    try {
+      // Update progress state for concept art
+      setImageGenerationProgress(prev => ({
+        ...prev,
+        concept: { loading: true, completed: false, failed: false }
+      }));
+
+      // Generate main concept art
+      console.log('Generating concept art...');
+      const conceptPrompt = createWorldImagePrompt(userIdea, worldType);
+      const conceptResult = await generateImageWithFallback(conceptPrompt, 'concept');
+      
+      if (conceptResult.isImage) {
+        visualResults.conceptImage = conceptResult.image;
+      } else {
+        visualResults.conceptImageDescription = conceptResult;
+      }
+
+      setImageGenerationProgress(prev => ({
+        ...prev,
+        concept: { 
+          loading: false, 
+          completed: true, 
+          failed: !conceptResult.isImage 
+        }
+      }));
+
+      // Generate character visuals
+      if (characterConcepts && characterConcepts.length > 0) {
+        console.log('Generating character visuals...');
+        const characterVisuals = [];
+        
+        for (let i = 0; i < Math.min(characterConcepts.length, 6); i++) {
+          setImageGenerationProgress(prev => {
+            const newCharacters = [...prev.characters];
+            newCharacters[i] = { loading: true, completed: false, failed: false };
+            return { ...prev, characters: newCharacters };
+          });
+
+          const character = characterConcepts[i];
+          const characterPrompt = createCharacterImagePrompt(character, worldType);
+          const characterResult = await generateImageWithFallback(characterPrompt, 'character');
+          characterVisuals.push(characterResult);
+
+          setImageGenerationProgress(prev => {
+            const newCharacters = [...prev.characters];
+            newCharacters[i] = { 
+              loading: false, 
+              completed: true, 
+              failed: !characterResult.isImage 
+            };
+            return { ...prev, characters: newCharacters };
+          });
+
+          // Small delay between requests
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+        visualResults.characterVisuals = characterVisuals;
+      }
+
+      // Generate scenario visuals
+      console.log('Generating scenario visuals...');
+      const scenarioVisuals = [];
+      
+      for (let i = 0; i < 3; i++) {
+        setImageGenerationProgress(prev => {
+          const newScenarios = [...prev.scenarios];
+          newScenarios[i] = { loading: true, completed: false, failed: false };
+          return { ...prev, scenarios: newScenarios };
+        });
+
+        const scenarioPrompt = createScenarioImagePrompt(i, userIdea, worldType);
+        const scenarioResult = await generateImageWithFallback(scenarioPrompt, 'scenario');
+        scenarioVisuals.push(scenarioResult);
+
+        setImageGenerationProgress(prev => {
+          const newScenarios = [...prev.scenarios];
+          newScenarios[i] = { 
+            loading: false, 
+            completed: true, 
+            failed: !scenarioResult.isImage 
+          };
+          return { ...prev, scenarios: newScenarios };
+        });
+
+        // Small delay between requests
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      
+      visualResults.scenarioVisuals = scenarioVisuals;
+
+    } catch (error) {
+      console.error('Error generating visual content:', error);
+    }
+
+    return visualResults;
+  };
+
+  /**
+   * Main function to generate complete world content with visual content
    * @param {string} userIdea - User's core world idea
    * @param {string} worldType - Selected world type
-   * @returns {Promise<Object>} Complete world data including all sections
+   * @param {boolean} generateVisuals - Whether to generate visual content (default: true)
+   * @returns {Promise<Object>} Complete world data including all sections and visual content
    */
-  const generateWorldContent = async (userIdea, worldType) => {
+  const generateWorldContent = async (userIdea, worldType, generateVisuals = true) => {
     setIsLoading(true);
     setError(null);
+
+    // Reset image generation progress
+    setImageGenerationProgress({
+      concept: { loading: false, completed: false, failed: false },
+      characters: Array(6).fill({ loading: false, completed: false, failed: false }),
+      scenarios: Array(3).fill({ loading: false, completed: false, failed: false })
+    });
 
     // Check if API key is available
     if (!apiKey) {
@@ -252,28 +477,29 @@ const useGeminiApi = () => {
       
       const conceptualMaps = await generateText(mapsPrompt);
 
-      // Generate concept art image (allow failure without breaking the whole process)
-      let conceptImage = null;
-      try {
-        const imagePrompt = `Generate a concept art image of a ${worldType} world, inspired by the idea: "${userIdea}". Focus on key visual elements and atmosphere. The image should be cinematic, detailed, and capture the essence of this unique world. High quality digital art style.`;
-        conceptImage = await generateImage(imagePrompt);
-      } catch (imageErr) {
-        console.warn('Image generation failed, continuing without image:', imageErr.message);
-        conceptImage = null;
-      }
-
-      setIsLoading(false);
-      
-      return {
+      // Create base world data
+      let worldData = {
         worldNarrative: cleanText(worldNarrative),
         gameBookIdeas: Array.isArray(gameBookIdeas) ? gameBookIdeas : [],
         customizationOptions: Array.isArray(customizationOptions) ? customizationOptions : [],
         characterConcepts: Array.isArray(characterConcepts) ? characterConcepts : [],
         conceptualMaps: cleanText(conceptualMaps),
-        conceptImage,
+        conceptImage: null,
+        conceptImageDescription: null,
+        characterVisuals: [],
+        scenarioVisuals: [],
         userIdea,
         worldType
       };
+
+      // Generate visual content if requested
+      if (generateVisuals) {
+        console.log('Starting visual content generation...');
+        worldData = await generateAllVisualContent(worldData);
+      }
+
+      setIsLoading(false);
+      return worldData;
 
     } catch (err) {
       setError(err.message);
@@ -284,9 +510,11 @@ const useGeminiApi = () => {
 
   return {
     generateWorldContent,
+    generateImageWithFallback,
     isLoading,
     error,
-    setError
+    setError,
+    imageGenerationProgress
   };
 };
 
